@@ -246,7 +246,8 @@ def keypoint_map(K):
 # =====================================================================
 
 def run_pipeline(video_path, height_m=1.75, fps_override=None, max_seconds=8.0,
-                 progress=lambda frac: None, pose_fn=None, out_video=None, playback="slow", pauses=True):
+                 progress=lambda frac: None, pose_fn=None, out_video=None, playback="slow", pauses=True,
+                 camera="mobile"):
     """pose_fn(frame_index, frame_bgr, prev_center) -> (kpts, scores, box) ; par défaut RTMPose.
     progress(frac) avec frac entre 0 et 1. Si out_video est donné, écrit la vidéo annotée."""
     pose_fn = pose_fn or (lambda i, f, c: rtmlib_pose(f, c))
@@ -275,7 +276,7 @@ def run_pipeline(video_path, height_m=1.75, fps_override=None, max_seconds=8.0,
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
         # -- caméra
-        if prev_gray is not None:
+        if prev_gray is not None and camera == "mobile":
             M, inl = camera_step(prev_gray, gray, prev_box)
             if M is not None:
                 T = T @ np.vstack([M, [0, 0, 1]])
@@ -301,7 +302,7 @@ def run_pipeline(video_path, height_m=1.75, fps_override=None, max_seconds=8.0,
     n = len(T_list)
     if n < 30 or K is None:
         raise ValueError("Trop peu d'images exploitables (athlète non détecté ?).")
-    result, ctx = analyse(kp_list, sc_list, T_list, inl_list, fps, file_fps, height_m, K)
+    result, ctx = analyse(kp_list, sc_list, T_list, inl_list, fps, file_fps, height_m, K, camera)
     result["video_annotee"] = False
     if out_video:
         try:
@@ -447,7 +448,7 @@ def _ds(a, step):
     return [None if not np.isfinite(v) else round(float(v), 2) for v in np.asarray(a)[::step]]
 
 
-def analyse(kp_list, sc_list, T_list, inl_list, fps, file_fps, height_m, K):
+def analyse(kp_list, sc_list, T_list, inl_list, fps, file_fps, height_m, K, camera="mobile"):
     n = len(T_list)
     km = keypoint_map(K)
     kp = np.full((n, K, 2), np.nan)
@@ -527,10 +528,18 @@ def analyse(kp_list, sc_list, T_list, inl_list, fps, file_fps, height_m, K):
         rej_count[why] = rej_count.get(why, 0) + 1
 
     # -- message d'état
+    inl_pct = float(np.median(inl_list)) if inl_list else 0.0
     if run is None:
-        msg = (f"Aucune course lancée détectée : le bassin n'a pas dépassé {V_RUN:.0f} m/s "
-               f"(maximum mesuré {vmax:.1f} m/s). Aucune foulée n'est comptée. Si l'athlète court vraiment, "
-               "vérifie la taille saisie, la cadence et que l'athlète est entier dans l'image.")
+        if camera == "mobile" and inl_pct < 0.5:
+            msg = (f"Stabilisation de la caméra échouée (seulement {100 * inl_pct:.0f} % de points de fond fiables). "
+                   "Quand la caméra suit le coureur devant un fond pauvre (piste, herbe, lignes parallèles), le mouvement "
+                   f"du coureur est annulé avec celui de la caméra : bassin mesuré à {vmax:.1f} m/s au maximum. "
+                   "Ce n'est pas une absence de course. Filme avec un trépied fixe et choisis « Caméra fixe », "
+                   "ou place des repères nets dans le décor (plots, bandes).")
+        else:
+            msg = (f"Aucune course lancée détectée : le bassin n'a pas dépassé {V_RUN:.0f} m/s "
+                   f"(maximum mesuré {vmax:.1f} m/s). Aucune foulée n'est comptée. Si l'athlète court vraiment, "
+                   "vérifie la taille saisie, la cadence et que l'athlète est entier dans l'image.")
         metrics = {"erreur": msg}
     else:
         metrics = sprint_metrics(contacts, fps)
@@ -588,7 +597,7 @@ def analyse(kp_list, sc_list, T_list, inl_list, fps, file_fps, height_m, K):
         warns.append("Cadence < 100 images/s : les temps de contact et de vol sont très peu fiables. Filme en 120-240 images/s.")
     if pose_ok < 0.9:
         warns.append(f"Athlète détecté sur seulement {100 * pose_ok:.0f} % des images.")
-    if inl < 0.5:
+    if camera == "mobile" and inl < 0.5:
         warns.append("Stabilisation peu fiable (peu de fond net exploitable) : le mouvement du bassin peut être faussé.")
     warns.append("Les distances et vitesses dépendent de la taille saisie (±6 % environ). Les temps et la fréquence n'en dépendent pas.")
     warns.append("Hypothèse : caméra de profil, athlète dans un plan à peu près perpendiculaire à l'axe de la caméra.")
@@ -633,7 +642,8 @@ def analyse(kp_list, sc_list, T_list, inl_list, fps, file_fps, height_m, K):
         "appuis": [{"pied": c.foot, "debut_s": round(c.t_on, 3), "fin_s": round(c.t_off, 3),
                     "duree_ms": round(1000 * c.duration, 1), "x_m": round(c.x, 2)} for c in contacts],
         "qualite": {"athlete_detecte_pct": round(100 * pose_ok), "pieds_visibles_pct": round(100 * foot_ok),
-                    "stabilisation_fiabilite_pct": round(100 * inl)},
+                    "stabilisation_fiabilite_pct": (round(100 * inl) if camera == "mobile" else None)},
+        "camera": camera,
         "avertissements": warns,
         "foulees": strides,
         "bilan": build_bilan(strides, unc_ms),

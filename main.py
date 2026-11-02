@@ -18,7 +18,7 @@ RUN_LOCK = threading.Semaphore(1)   # une analyse à la fois (mémoire limitée)
 MAX_UPLOAD_MB = 150
 
 
-def _worker(job_id, path, height_m, fps, max_s, playback, pauses):
+def _worker(job_id, path, height_m, fps, max_s, playback, pauses, camera):
     job = JOBS[job_id]
     with RUN_LOCK:
         try:
@@ -28,7 +28,7 @@ def _worker(job_id, path, height_m, fps, max_s, playback, pauses):
                 job["progress"] = min(99, int(100 * frac))
 
             job["result"] = pipeline.run_pipeline(path, height_m=height_m, fps_override=fps, max_seconds=max_s,
-                                                  progress=prog, out_video=job["video"], playback=playback, pauses=pauses)
+                                                  progress=prog, out_video=job["video"], playback=playback, pauses=pauses, camera=camera)
             job["status"], job["progress"] = "done", 100
         except Exception as e:  # noqa
             traceback.print_exc()
@@ -48,7 +48,7 @@ def health():
 @app.post("/api/analyze")
 async def analyze(video: UploadFile = File(...), height_m: float = Form(1.75),
                   fps: str = Form(""), max_seconds: float = Form(6.0),
-                  playback: str = Form("slow"), pauses: str = Form("1")):
+                  playback: str = Form("slow"), pauses: str = Form("1"), camera: str = Form("fixe")):
     if not 1.2 <= height_m <= 2.3:
         raise HTTPException(400, "Taille hors limites (1,2 à 2,3 m).")
     if not 1 <= max_seconds <= 15:
@@ -93,7 +93,8 @@ async def analyze(video: UploadFile = File(...), height_m: float = Form(1.75),
                 os.remove(gone["video"])
             except OSError:
                 pass
-    threading.Thread(target=_worker, args=(job_id, path, height_m, fps_val, max_seconds, playback, pauses == "1"), daemon=True).start()
+    threading.Thread(target=_worker, args=(job_id, path, height_m, fps_val, max_seconds, playback, pauses == "1",
+                                                       camera if camera in ("fixe", "mobile") else "fixe"), daemon=True).start()
     return {"job_id": job_id}
 
 
@@ -164,6 +165,8 @@ table{width:100%;border-collapse:collapse}td,th{padding:6px 4px;text-align:left;
 <div class="card">
 <label>Vidéo <small>(profil, athlète entier visible, 4 à 8 s)</small></label>
 <input id="v" type="file" accept="video/*">
+<label>Caméra</label>
+<select id="cam"><option value="fixe">Fixe (trépied) : recommandé</option><option value="mobile">Mobile (suit le coureur) : expérimental</option></select>
 <label>Taille de l'athlète en mètres</label>
 <input id="h" type="number" step="0.01" value="1.75" inputmode="decimal">
 <label>Cadence réelle de tournage <small>(images/s, laisse vide si le fichier est correct)</small></label>
@@ -210,7 +213,7 @@ function show(r,id){
  <tr><td>Inclinaison du tronc (°)</td><td class="big">${cell(m.inclinaison_tronc_deg)}</td></tr>
  <tr><td>Angle du genou à l'attaque (°)</td><td class="big">${cell(m.angle_genou_a_l_attaque_deg)}</td></tr>
  </table></div>`}
- h+=`<div class="card"><b>Qualité</b><br>Athlète détecté : ${q.athlete_detecte_pct} % · Pieds visibles : ${q.pieds_visibles_pct} % · Stabilisation : ${q.stabilisation_fiabilite_pct} %<br>
+ h+=`<div class="card"><b>Qualité</b><br>Athlète détecté : ${q.athlete_detecte_pct} % · Pieds visibles : ${q.pieds_visibles_pct} % · Stabilisation : ${q.stabilisation_fiabilite_pct==null?'caméra fixe':q.stabilisation_fiabilite_pct+' %'}<br>
  Sens : ${r.sens_course} · Échelle : ${r.echelle_px_par_m} px/m · ${r.images_analysees} images à ${r.fps_utilise} i/s`;
  if(r.vitesse_max_hanches_ms)h+=`<br>Vitesse max des hanches : ${r.vitesse_max_hanches_ms} m/s`;
  h+='</div>';
@@ -243,7 +246,7 @@ $('go').onclick=async()=>{
  const file=$('v').files[0];if(!file){$('st').innerHTML='<div class="err">Choisis une vidéo.</div>';return}
  $('go').disabled=true;$('out').innerHTML='';
  $('st').innerHTML='<div class="card">Envoi de la vidéo…<div class="bar"><i id="pb"></i></div></div>';
- const fd=new FormData();fd.append('video',file);fd.append('height_m',$('h').value);fd.append('fps',$('f').value);fd.append('max_seconds',$('m').value);fd.append('playback',$('pb2').value);fd.append('pauses',$('pz').value);
+ const fd=new FormData();fd.append('video',file);fd.append('height_m',$('h').value);fd.append('fps',$('f').value);fd.append('max_seconds',$('m').value);fd.append('playback',$('pb2').value);fd.append('pauses',$('pz').value);fd.append('camera',$('cam').value);
  try{
   const r=await fetch('/api/analyze',{method:'POST',body:fd});
   if(!r.ok){const e=await r.json().catch(()=>({detail:'Erreur '+r.status}));throw new Error(e.detail||('Erreur '+r.status))}
